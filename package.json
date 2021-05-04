@@ -21,9 +21,12 @@
   },
   "homepage": "https://github.com/nikvolf/sub-bench#readme",
   "dependencies": {
-    "@polkadot/api": "^4.1.1",
-    "@polkadot/keyring": "^6.0.5",
-    "@polkadot/types": "^4.1.1"
+    "@polkadot/api": "^4.8.1",
+    "@polkadot/keyring": "^6.3.1",
+    "@polkadot/types": "^4.8.1",
+    "bip39": "^3.0.4",
+    "ethereumjs-wallet": "^1.0.1",
+    "moonbeam-types-bundle": "^1.1.12"
   },
   "devDependencies": {
     "awesome-typescript-loader": "^5.2.1",
