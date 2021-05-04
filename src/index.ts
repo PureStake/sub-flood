@@ -3,9 +3,20 @@ import {ApiPromise, WsProvider} from "@polkadot/api";
 import {KeyringPair} from "@polkadot/keyring/types";
 import { SignedBlock, BlockHash, BlockAttestations } from "@polkadot/types/interfaces";
 
+import Wallet, { hdkey } from "ethereumjs-wallet";
+import { mnemonicToSeedSync, generateMnemonic } from "bip39";
+import { typesBundle } from "moonbeam-types-bundle";
 
 function seedFromNum(seed: number): string {
     return '//user//' + ("0000" + seed).slice(-4);
+}
+
+function pathFromNum(seed: number) {
+    return `m/44'/60'/0'/0/${seed}`;
+}
+
+function deriveFromNum(hdwallet: hdkey, seed: number): Wallet {
+    return hdwallet.derivePath(pathFromNum(seed)).getWallet();
 }
 
 async function getBlockStats(api: ApiPromise, hash?: BlockHash | undefined): Promise<any> {
@@ -42,31 +53,35 @@ async function run() {
     let FINALISATION_TIMEOUT = argv.finalization_timeout ? argv.finalization_timeout : 20000; // 20 seconds
     let FINALISATION_ATTEMPTS = argv.finalization_attempts ? argv.finalization_attempts : 5;
 
+    const ALICE_PRIVATE_KEY = argv.alice || "0x99b3c12287537e38c90a9219d4cb074a89a16e9cdb20bf85728ebd97c343e342";
+    const MNEMONIC = argv.mnemonic || generateMnemonic(256);
+    const HDWALLET = hdkey.fromMasterSeed(mnemonicToSeedSync(MNEMONIC));
+    
     let provider = new WsProvider(WS_URL);
 
     let apiRequest = await Promise.race([
-        ApiPromise.create({provider}),
+        ApiPromise.create({provider: provider, typesBundle: typesBundle as any}),
         new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000))
     ]).catch(function(err) {
         throw Error(`Timeout error: ` + err.toString());
     });
     let api = apiRequest as ApiPromise;
 
-    let keyring = new Keyring({type: 'sr25519'});
+    let keyring = new Keyring({type: 'ethereum'});
 
     let nonces = [];
 
     console.log("Fetching nonces for accounts...");
-    for (let i = 0; i <= TOTAL_USERS; i++) {
-        let stringSeed = seedFromNum(i);
-        let keys = keyring.addFromUri(stringSeed);
+    for (let seed = 0; seed <= TOTAL_USERS; seed++) {
+        let accountPK = deriveFromNum(HDWALLET, seed).getPrivateKeyString();
+        let keys = keyring.addFromUri(accountPK, null, "ethereum");
         let nonce = (await api.query.system.account(keys.address)).nonce.toNumber();
         nonces.push(nonce)
     }
     console.log("All nonces fetched!");
 
     console.log("Endowing all users from Alice account...");
-    let aliceKeyPair = keyring.addFromUri("//Alice");
+    let aliceKeyPair = keyring.addFromUri(ALICE_PRIVATE_KEY.toString(), null, "ethereum");
     let aliceNonce = (await api.query.system.account(aliceKeyPair.address)).nonce.toNumber();
     let keyPairs = new Map<number, KeyringPair>()
     console.log("Alice nonce is " + aliceNonce);
@@ -74,13 +89,15 @@ async function run() {
     let finalized_transactions = 0;
 
     for (let seed = 0; seed <= TOTAL_USERS; seed++) {
-        let keypair = keyring.addFromUri(seedFromNum(seed));
+        let accountPK = deriveFromNum(HDWALLET, seed).getPrivateKeyString();
+        let keypair = keyring.addFromUri(accountPK, null, "ethereum");
         keyPairs.set(seed, keypair);
 
         // should be greater than existential deposit.
-        let transfer = api.tx.balances.transfer(keypair.address, 10 * api.consts.balances.existentialDeposit.toNumber());
+        let existencialDeposit = api.consts.balances.existentialDeposit.toNumber();
+        let transfer = api.tx.balances.transfer(keypair.address, (10 * existencialDeposit) || api.createType("Balance", "100000000000") /* 100 gwei */); 
 
-        let receiverSeed = seedFromNum(seed);
+        let receiverSeed = pathFromNum(seed);
         console.log(
             `Alice -> ${receiverSeed} (${keypair.address})`
         );
@@ -94,11 +111,10 @@ async function run() {
     console.log("All users endowed from Alice account!");
 
     console.log("Wait for transactions finalisation");
-    await new Promise(r => setTimeout(r, FINALISATION_TIMEOUT));
-    console.log(`Finalized transactions ${finalized_transactions}`);
-
-    if (finalized_transactions < TOTAL_USERS + 1) {
-        throw Error(`Not all transactions finalized`);
+    while (finalized_transactions < TOTAL_USERS + 1) {
+        console.log(`Not all transactions finalized...`);
+        await new Promise(r => setTimeout(r, FINALISATION_TIMEOUT));
+        console.log(`Finalized transactions ${finalized_transactions}`);
     }
 
     console.log(`Pregenerating ${TOTAL_TRANSACTIONS} transactions across ${TOTAL_THREADS} threads...`);
